@@ -88,9 +88,14 @@ fn render_transactions(
                 .and_then(|s| categories.iter().find(|c| c.id == s.category_id))
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "-".into());
+            let signed_amount = match t.direction {
+                DirectionKind::Income => t.amount,
+                DirectionKind::Expense => -t.amount,
+                DirectionKind::Transfer => t.amount,
+            };
             Row::new(vec![
                 Cell::from(account),
-                Cell::from(format!("{:.2}", t.amount)),
+                Cell::from(format!("{:+.2}", signed_amount)),
                 Cell::from(match t.direction {
                     DirectionKind::Income => "income",
                     DirectionKind::Expense => "expense",
@@ -142,7 +147,7 @@ fn render_input(
             },
             Style::default().fg(Color::Cyan),
         ),
-        Span::raw(" | q quit | r refresh | a add | d toggle income/expense"),
+        Span::raw(" | q quit | r refresh | a add"),
     ])];
 
     if app.mode == Mode::Input {
@@ -187,12 +192,8 @@ fn render_input(
                 format!("Description: {}", app.input.description),
                 desc_style,
             ),
-            Span::raw(" | Enter to submit, Esc to cancel"),
+            Span::raw(" | Tab switches fields | Enter to submit, Esc to cancel"),
         ]));
-    } else {
-        lines.push(Line::raw(
-            "Use backend API to add accounts/categories. Press a to add a transaction quickly.",
-        ));
     }
 
     let paragraph =

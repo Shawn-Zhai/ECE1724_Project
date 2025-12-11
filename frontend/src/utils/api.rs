@@ -12,6 +12,11 @@ pub async fn submit_transaction(app: &mut App) -> Result<()> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid amount"))?;
 
+    if amount < 0.0 {
+        app.status = "Amount must be non-negative".into();
+        return Ok(());
+    }
+
     let account = app
         .accounts
         .get(app.input.account_idx)

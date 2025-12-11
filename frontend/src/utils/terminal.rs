@@ -119,7 +119,8 @@ pub async fn handle_input_mode(code: KeyCode, app: &mut App) -> Result<()> {
         },
         KeyCode::Char(c) => match app.input.active_field {
             ActiveField::Amount => {
-                if c.is_ascii_digit() || c == '.' || c == '-' {
+                // Amounts are non-negative: allow digits and a single decimal point.
+                if c.is_ascii_digit() || (c == '.' && !app.input.amount.contains('.')) {
                     app.input.amount.push(c);
                 }
             }
