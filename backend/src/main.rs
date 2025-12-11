@@ -3,15 +3,15 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::FromRow;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::signal;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use uuid::Uuid;
 
 type AppResult<T> = Result<Json<T>, (StatusCode, String)>;
@@ -155,7 +155,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/accounts", get(list_accounts).post(create_account))
         .route("/categories", get(list_categories).post(create_category))
-        .route("/transactions", get(list_transactions).post(create_transaction))
+        .route(
+            "/transactions",
+            get(list_transactions).post(create_transaction),
+        )
         .route("/transactions/{id}", get(get_transaction))
         .with_state(state);
 
@@ -169,7 +172,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async { signal::ctrl_c().await.expect("failed to install Ctrl+C handler") };
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler")
+    };
     ctrl_c.await;
     info!("signal received, shutting down");
 }
@@ -204,9 +211,9 @@ async fn list_accounts(State(state): State<AppState>) -> AppResult<Vec<Account>>
         ORDER BY a.created_at DESC
         "#,
     )
-        .fetch_all(&state.pool)
-        .await
-        .map_err(internal_error)?;
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal_error)?;
     Ok(Json(rows))
 }
 
@@ -215,7 +222,9 @@ async fn create_account(
     Json(payload): Json<CreateAccount>,
 ) -> AppResult<Account> {
     let id = Uuid::new_v4().to_string();
-    let now = OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap();
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     sqlx::query(
         "INSERT INTO accounts (id, name, kind, balance, created_at) VALUES (?1, ?2, ?3, 0.0, ?4)",
     )
@@ -250,16 +259,16 @@ async fn create_category(
     Json(payload): Json<CreateCategory>,
 ) -> AppResult<Category> {
     let id = Uuid::new_v4().to_string();
-    let now = OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap();
-    sqlx::query(
-        "INSERT INTO categories (id, name, created_at) VALUES (?1, ?2, ?3)",
-    )
-    .bind(&id)
-    .bind(&payload.name)
-    .bind(&now)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| map_conflict(e, "category already exists"))?;
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    sqlx::query("INSERT INTO categories (id, name, created_at) VALUES (?1, ?2, ?3)")
+        .bind(&id)
+        .bind(&payload.name)
+        .bind(&now)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| map_conflict(e, "category already exists"))?;
 
     let category = Category {
         id,
@@ -267,6 +276,147 @@ async fn create_category(
         created_at: now,
     };
     Ok(Json(category))
+}
+
+async fn list_transactions(State(state): State<AppState>) -> AppResult<Vec<Transaction>> {
+    let base_rows = sqlx::query_as::<_, TransactionRow>(
+        "SELECT * FROM transactions ORDER BY occurred_at DESC, created_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    let mut results = Vec::with_capacity(base_rows.len());
+    for row in base_rows {
+        let splits = sqlx::query_as::<_, TransactionSplit>(
+            "SELECT transaction_id, category_id, amount FROM transaction_splits WHERE transaction_id = ?1",
+        )
+        .bind(&row.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(internal_error)?;
+
+        let txn = Transaction {
+            id: row.id,
+            account_id: row.account_id,
+            amount: row.amount,
+            direction: parse_direction(&row.direction)?,
+            description: row.description,
+            occurred_at: row.occurred_at,
+            splits,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        };
+        results.push(txn);
+    }
+    Ok(Json(results))
+}
+
+async fn get_transaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<Transaction> {
+    let row = sqlx::query_as::<_, TransactionRow>("SELECT * FROM transactions WHERE id = ?1")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_error)?
+        .ok_or((StatusCode::NOT_FOUND, "transaction not found".to_string()))?;
+
+    let splits = sqlx::query_as::<_, TransactionSplit>(
+        "SELECT transaction_id, category_id, amount FROM transaction_splits WHERE transaction_id = ?1",
+    )
+    .bind(&row.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    let txn = Transaction {
+        id: row.id,
+        account_id: row.account_id,
+        amount: row.amount,
+        direction: parse_direction(&row.direction)?,
+        description: row.description,
+        occurred_at: row.occurred_at,
+        splits,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    };
+    Ok(Json(txn))
+}
+
+async fn create_transaction(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateTransaction>,
+) -> AppResult<Transaction> {
+    let txn_id = Uuid::new_v4().to_string();
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let occurred_at = payload.occurred_at.unwrap_or_else(|| now.clone());
+
+    let mut tx = state.pool.begin().await.map_err(internal_error)?;
+    sqlx::query("INSERT INTO transactions (id, account_id, amount, direction, description, occurred_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+        .bind(&txn_id)
+        .bind(&payload.account_id)
+        .bind(payload.amount)
+        .bind(payload.direction.as_str())
+        .bind(&payload.description)
+        .bind(&occurred_at)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+
+    let splits = payload
+        .splits
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| TransactionSplit {
+            transaction_id: txn_id.clone(),
+            category_id: s.category_id,
+            amount: s.amount,
+        })
+        .collect::<Vec<_>>();
+
+    for split in &splits {
+        sqlx::query("INSERT INTO transaction_splits (transaction_id, category_id, amount) VALUES (?1, ?2, ?3)")
+            .bind(&split.transaction_id)
+            .bind(&split.category_id)
+            .bind(split.amount)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error)?;
+    }
+
+    // Keep the account balance in sync for quick reads. Transfers are treated as no-ops here.
+    let delta = match payload.direction {
+        TransactionDirection::Income => payload.amount,
+        TransactionDirection::Expense => -payload.amount,
+        TransactionDirection::Transfer => 0.0,
+    };
+    sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+        .bind(delta)
+        .bind(&payload.account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+
+    tx.commit().await.map_err(internal_error)?;
+
+    let created = Transaction {
+        id: txn_id,
+        account_id: payload.account_id,
+        amount: payload.amount,
+        direction: payload.direction,
+        description: payload.description,
+        occurred_at,
+        splits,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    Ok(Json(created))
 }
 
 async fn build_pool(database_url: &str) -> anyhow::Result<SqlitePool> {
@@ -295,7 +445,10 @@ fn parse_direction(dir: &str) -> Result<TransactionDirection, (StatusCode, Strin
         "income" => Ok(TransactionDirection::Income),
         "expense" => Ok(TransactionDirection::Expense),
         "transfer" => Ok(TransactionDirection::Transfer),
-        _ => Err((StatusCode::INTERNAL_SERVER_ERROR, "invalid direction".into())),
+        _ => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid direction".into(),
+        )),
     }
 }
 
@@ -363,6 +516,42 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+async fn seed_defaults(pool: &SqlitePool) -> anyhow::Result<()> {
+    let account_count: (i64,) = sqlx::query_as("SELECT COUNT(1) FROM accounts")
+        .fetch_one(pool)
+        .await?;
+    if account_count.0 == 0 {
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, kind, balance, created_at) VALUES (?1, 'Main Checking', 'checking', 0.0, ?2)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    }
+
+    let cat_count: (i64,) = sqlx::query_as("SELECT COUNT(1) FROM categories")
+        .fetch_one(pool)
+        .await?;
+    if cat_count.0 == 0 {
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        for name in ["Income", "Groceries", "Rent", "Utilities", "Entertainment"] {
+            sqlx::query("INSERT INTO categories (id, name, created_at) VALUES (?1, ?2, ?3)")
+                .bind(Uuid::new_v4().to_string())
+                .bind(name)
+                .bind(&now)
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
 
