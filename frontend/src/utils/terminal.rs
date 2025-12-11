@@ -100,7 +100,7 @@ pub async fn handle_input_mode(code: KeyCode, app: &mut App) -> Result<()> {
             }
         }
         KeyCode::Char('d') => {
-            use super::models::DirectionKind;
+            use super::model::DirectionKind;
             app.input.direction = match app.input.direction {
                 DirectionKind::Expense => DirectionKind::Income,
                 _ => DirectionKind::Expense,

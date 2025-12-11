@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use super::app::{App, ActiveField, Mode};
-use super::models::{Account, Category, DirectionKind, Transaction};
+use super::model::{Account, Category, DirectionKind, Transaction};
 
 pub fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -12,7 +12,7 @@ pub fn ui(f: &mut ratatui::Frame, app: &mut App) {
         .constraints(
             [Constraint::Length(3), Constraint::Min(10), Constraint::Length(7)].as_ref(),
         )
-        .split(f.size());
+        .split(f.area());
 
     let status =
         Paragraph::new(app.status.clone()).block(Block::default().borders(Borders::ALL).title("Status"));

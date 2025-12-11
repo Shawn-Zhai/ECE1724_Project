@@ -1,4 +1,4 @@
-use super::models::{Account, Category, DirectionKind, Transaction};
+use super::model::{Account, Category, DirectionKind, Transaction};
 
 #[derive(Clone)]
 pub struct InputState {
