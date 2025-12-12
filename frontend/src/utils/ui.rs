@@ -80,6 +80,12 @@ fn render_transactions(
                 .find(|a| a.id == t.account_id)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "unknown".into());
+            let to_account = t
+                .to_account_id
+                .as_ref()
+                .and_then(|id| accounts.iter().find(|a| a.id == *id))
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| "-".into());
             let category = t
                 .splits
                 .first()
@@ -99,6 +105,7 @@ fn render_transactions(
                     DirectionKind::Expense => "expense",
                     DirectionKind::Transfer => "transfer",
                 }),
+                Cell::from(to_account),
                 Cell::from(category),
                 Cell::from(t.description.clone().unwrap_or_else(|| "".into())),
                 Cell::from(t.occurred_at.clone()),
@@ -109,12 +116,13 @@ fn render_transactions(
     let table = Table::new(
         rows,
         [
+            Constraint::Percentage(14),
+            Constraint::Percentage(10),
+            Constraint::Percentage(10),
+            Constraint::Percentage(13),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
             Constraint::Percentage(15),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(20),
-            Constraint::Percentage(25),
-            Constraint::Percentage(20),
         ],
     )
     .block(Block::default().title("Transactions").borders(Borders::ALL))
@@ -123,6 +131,7 @@ fn render_transactions(
             "Account",
             "Amount",
             "Dir",
+            "To",
             "Category",
             "Description",
             "Date",
@@ -145,10 +154,13 @@ fn render_input(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) 
             match app.mode {
                 Mode::Normal => "Normal",
                 Mode::Input => "Adding",
+                Mode::Transfer => "Transfer",
+                Mode::AddAccount => "New Account",
+                Mode::DeleteAccount => "Delete Account",
             },
             Style::default().fg(Color::Cyan),
         ),
-        Span::raw(" | q quit | a add"),
+        Span::raw(" | q quit | a add | t transfer | n new acct | x delete"),
     ])];
 
     if app.mode == Mode::Input {
@@ -195,6 +207,85 @@ fn render_input(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) 
             ),
             Span::raw(" | Tab switches fields | Enter to submit, Esc to cancel"),
         ]));
+    } else if app.mode == Mode::Transfer {
+        let from_name = app
+            .accounts
+            .get(app.input.account_idx)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "<no accounts>".into());
+        let to_name = app
+            .accounts
+            .get(app.input.to_account_idx)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "<no accounts>".into());
+
+        let amount_style = if app.input.active_field == ActiveField::Amount {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let desc_style = if app.input.active_field == ActiveField::Description {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::raw(format!(
+            "From: {} (left/right) | To: {} (up/down)",
+            from_name, to_name
+        )));
+        lines.push(Line::from(vec![
+            Span::styled(format!("Amount: {}", app.input.amount), amount_style),
+            Span::raw(" | "),
+            Span::styled(
+                format!("Description: {}", app.input.description),
+                desc_style,
+            ),
+            Span::raw(" | Tab switches fields | Enter to submit, Esc to cancel"),
+        ]));
+    } else if app.mode == Mode::AddAccount {
+        let name_style = if app.input.active_field == ActiveField::AccountName {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let kind_style = if app.input.active_field == ActiveField::AccountKind {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let kinds = ["checking", "savings", "credit", "investment"];
+        let current_kind = kinds
+            .get(app.input.new_account_kind_idx)
+            .copied()
+            .unwrap_or("checking");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("Name: {}", app.input.new_account_name),
+                name_style,
+            ),
+            Span::raw(" | "),
+            Span::styled(format!("Type: {}", current_kind), kind_style),
+            Span::raw(" | Tab switches fields | Up/Down change type | Enter to save, Esc to cancel"),
+        ]));
+    } else if app.mode == Mode::DeleteAccount {
+        let account_name = app
+            .accounts
+            .get(app.input.account_idx)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "<no accounts>".into());
+        lines.push(Line::raw(format!(
+            "Select account to delete (defaults locked): {} (left/right, Enter confirms, Esc cancels)",
+            account_name
+        )));
     }
 
     let paragraph =

@@ -4,7 +4,7 @@ use axum::extract::{
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -38,7 +38,7 @@ enum AccountKind {
     Checking,
     Savings,
     Credit,
-    Cash,
+    Investment,
 }
 
 impl AccountKind {
@@ -47,12 +47,12 @@ impl AccountKind {
             AccountKind::Checking => "checking",
             AccountKind::Savings => "savings",
             AccountKind::Credit => "credit",
-            AccountKind::Cash => "cash",
+            AccountKind::Investment => "investment",
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum TransactionDirection {
     Income,
@@ -90,6 +90,7 @@ struct Category {
 struct Transaction {
     id: String,
     account_id: String,
+    to_account_id: Option<String>,
     amount: f64,
     direction: TransactionDirection,
     description: Option<String>,
@@ -103,6 +104,7 @@ struct Transaction {
 struct TransactionRow {
     id: String,
     account_id: String,
+    to_account_id: Option<String>,
     amount: f64,
     direction: String,
     description: Option<String>,
@@ -138,6 +140,7 @@ struct SplitInput {
 #[derive(Deserialize)]
 struct CreateTransaction {
     account_id: String,
+    to_account_id: Option<String>,
     amount: f64,
     direction: TransactionDirection,
     description: Option<String>,
@@ -166,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/accounts", get(list_accounts).post(create_account))
+        .route("/accounts/{id}", delete(delete_account))
         .route("/categories", get(list_categories).post(create_category))
         .route(
             "/transactions",
@@ -218,26 +222,13 @@ async fn list_accounts(State(state): State<AppState>) -> AppResult<Vec<Account>>
     let rows = sqlx::query_as::<_, Account>(
         r#"
         SELECT
-            a.id,
-            a.name,
-            a.kind,
-            CAST(
-                COALESCE(
-                    SUM(
-                        CASE t.direction
-                            WHEN 'income' THEN t.amount
-                            WHEN 'expense' THEN -t.amount
-                            ELSE 0
-                        END
-                    ),
-                    0
-                ) AS REAL
-            ) AS balance,
-            a.created_at
-        FROM accounts a
-        LEFT JOIN transactions t ON t.account_id = a.id
-        GROUP BY a.id
-        ORDER BY a.created_at DESC
+            id,
+            name,
+            kind,
+            balance,
+            created_at
+        FROM accounts
+        ORDER BY created_at DESC
         "#,
     )
     .fetch_all(&state.pool)
@@ -274,6 +265,37 @@ async fn create_account(
     };
     let _ = state.notifier.send(ServerEvent::DataChanged);
     Ok(Json(account))
+}
+
+async fn delete_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let default_names = ["Main Checking", "Savings", "Credit Card"];
+    let existing: Option<Account> = sqlx::query_as(
+        "SELECT id, name, kind, balance, created_at FROM accounts WHERE id = ?1",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    let Some(account) = existing else {
+        return Err((StatusCode::NOT_FOUND, "account not found".into()));
+    };
+
+    if default_names.iter().any(|n| n == &account.name) {
+        return Err((StatusCode::CONFLICT, "default accounts cannot be deleted".into()));
+    }
+
+    sqlx::query("DELETE FROM accounts WHERE id = ?1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error)?;
+
+    let _ = state.notifier.send(ServerEvent::DataChanged);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_categories(State(state): State<AppState>) -> AppResult<Vec<Category>> {
@@ -330,6 +352,7 @@ async fn list_transactions(State(state): State<AppState>) -> AppResult<Vec<Trans
         let txn = Transaction {
             id: row.id,
             account_id: row.account_id,
+            to_account_id: row.to_account_id,
             amount: row.amount,
             direction: parse_direction(&row.direction)?,
             description: row.description,
@@ -365,6 +388,7 @@ async fn get_transaction(
     let txn = Transaction {
         id: row.id,
         account_id: row.account_id,
+        to_account_id: row.to_account_id,
         amount: row.amount,
         direction: parse_direction(&row.direction)?,
         description: row.description,
@@ -385,13 +409,52 @@ async fn create_transaction(
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
     let occurred_at = payload.occurred_at.unwrap_or_else(|| now.clone());
+    let direction = payload.direction.clone();
+    if payload.amount < 0.0 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be non-negative".into()));
+    }
+
+    let to_account_id = match direction {
+        TransactionDirection::Transfer => {
+            let dest = payload
+                .to_account_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "transfer requires destination account".into()))?;
+            if dest == payload.account_id {
+                return Err((StatusCode::BAD_REQUEST, "source and destination cannot match".into()));
+            }
+            let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM accounts WHERE id = ?1")
+                .bind(&dest)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(internal_error)?;
+            if exists.is_none() {
+                return Err((StatusCode::NOT_FOUND, "destination account not found".into()));
+            }
+            Some(dest)
+        }
+        _ => None,
+    };
 
     let mut tx = state.pool.begin().await.map_err(internal_error)?;
-    sqlx::query("INSERT INTO transactions (id, account_id, amount, direction, description, occurred_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+    let source: Option<(String, f64)> = sqlx::query_as(
+        "SELECT kind, balance FROM accounts WHERE id = ?1",
+    )
+    .bind(&payload.account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+    let (source_kind, source_balance) = source
+        .ok_or((StatusCode::NOT_FOUND, "source account not found".into()))?;
+
+    let overdraft_allowed = matches!(source_kind.as_str(), "credit" | "investment");
+    let would_negative = |bal: f64, amount: f64| bal - amount < 0.0;
+    sqlx::query("INSERT INTO transactions (id, account_id, to_account_id, amount, direction, description, occurred_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
         .bind(&txn_id)
         .bind(&payload.account_id)
+        .bind(&to_account_id)
         .bind(payload.amount)
-        .bind(payload.direction.as_str())
+        .bind(direction.as_str())
         .bind(&payload.description)
         .bind(&occurred_at)
         .bind(&now)
@@ -400,16 +463,20 @@ async fn create_transaction(
         .await
         .map_err(internal_error)?;
 
-    let splits = payload
-        .splits
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| TransactionSplit {
-            transaction_id: txn_id.clone(),
-            category_id: s.category_id,
-            amount: s.amount,
-        })
-        .collect::<Vec<_>>();
+    let splits = if direction == TransactionDirection::Transfer {
+        Vec::new()
+    } else {
+        payload
+            .splits
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| TransactionSplit {
+                transaction_id: txn_id.clone(),
+                category_id: s.category_id,
+                amount: s.amount,
+            })
+            .collect::<Vec<_>>()
+    };
 
     for split in &splits {
         sqlx::query("INSERT INTO transaction_splits (transaction_id, category_id, amount) VALUES (?1, ?2, ?3)")
@@ -421,26 +488,55 @@ async fn create_transaction(
             .map_err(internal_error)?;
     }
 
-    // Keep the account balance in sync for quick reads. Transfers are treated as no-ops here.
-    let delta = match payload.direction {
-        TransactionDirection::Income => payload.amount,
-        TransactionDirection::Expense => -payload.amount,
-        TransactionDirection::Transfer => 0.0,
-    };
-    sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
-        .bind(delta)
-        .bind(&payload.account_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_error)?;
+    match direction {
+        TransactionDirection::Income => {
+            sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+                .bind(payload.amount)
+                .bind(&payload.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?;
+        }
+        TransactionDirection::Expense => {
+            if !overdraft_allowed && would_negative(source_balance, payload.amount) {
+                return Err((StatusCode::BAD_REQUEST, "insufficient funds for this account type".into()));
+            }
+            sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2")
+                .bind(payload.amount)
+                .bind(&payload.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?;
+        }
+        TransactionDirection::Transfer => {
+            if let Some(dest) = &to_account_id {
+                if !overdraft_allowed && would_negative(source_balance, payload.amount) {
+                    return Err((StatusCode::BAD_REQUEST, "insufficient funds for this account type".into()));
+                }
+                sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2")
+                    .bind(payload.amount)
+                    .bind(&payload.account_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal_error)?;
+                sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+                    .bind(payload.amount)
+                    .bind(dest)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal_error)?;
+            }
+        }
+    }
 
     tx.commit().await.map_err(internal_error)?;
 
     let created = Transaction {
         id: txn_id,
         account_id: payload.account_id,
+        to_account_id,
         amount: payload.amount,
-        direction: payload.direction,
+        direction,
         description: payload.description,
         occurred_at,
         splits,
@@ -503,6 +599,11 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Backfill new transfer target column if migrating from older schema.
+    let _ = sqlx::query("ALTER TABLE transactions ADD COLUMN to_account_id TEXT")
+        .execute(pool)
+        .await;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS categories (
@@ -520,13 +621,15 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
         CREATE TABLE IF NOT EXISTS transactions (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL,
+            to_account_id TEXT,
             amount REAL NOT NULL,
             direction TEXT NOT NULL,
             description TEXT,
             occurred_at TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+            FOREIGN KEY (to_account_id) REFERENCES accounts(id) ON DELETE SET NULL
         );
         "#,
     )
@@ -559,13 +662,48 @@ async fn seed_defaults(pool: &SqlitePool) -> anyhow::Result<()> {
         let now = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (id, name, kind, balance, created_at) VALUES (?1, 'Main Checking', 'checking', 0.0, ?2)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&now)
-        .execute(pool)
-        .await?;
+        for (name, kind) in [
+            ("Main Checking", "checking"),
+            ("Savings", "savings"),
+            ("Credit Card", "credit"),
+        ] {
+            sqlx::query(
+                "INSERT INTO accounts (id, name, kind, balance, created_at) VALUES (?1, ?2, ?3, 0.0, ?4)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(name)
+            .bind(kind)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+        }
+    } else {
+        // Ensure default accounts exist even if database was created before defaults were added.
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        for (name, kind) in [
+            ("Main Checking", "checking"),
+            ("Savings", "savings"),
+            ("Credit Card", "credit"),
+        ] {
+            let exists: (i64,) =
+                sqlx::query_as("SELECT COUNT(1) FROM accounts WHERE name = ?1")
+                    .bind(name)
+                    .fetch_one(pool)
+                    .await?;
+            if exists.0 == 0 {
+                sqlx::query(
+                    "INSERT INTO accounts (id, name, kind, balance, created_at) VALUES (?1, ?2, ?3, 0.0, ?4)",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(name)
+                .bind(kind)
+                .bind(&now)
+                .execute(pool)
+                .await?;
+            }
+        }
     }
 
     let cat_count: (i64,) = sqlx::query_as("SELECT COUNT(1) FROM categories")

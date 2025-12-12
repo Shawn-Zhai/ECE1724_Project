@@ -39,6 +39,7 @@ pub struct TransactionSplit {
 pub struct Transaction {
     pub id: String,
     pub account_id: String,
+    pub to_account_id: Option<String>,
     pub amount: f64,
     pub direction: DirectionKind,
     pub description: Option<String>,
@@ -51,6 +52,7 @@ pub struct Transaction {
 #[derive(Serialize)]
 pub struct CreateTransaction {
     pub account_id: String,
+    pub to_account_id: Option<String>,
     pub amount: f64,
     pub direction: DirectionKind,
     pub description: Option<String>,

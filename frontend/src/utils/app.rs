@@ -8,6 +8,9 @@ pub struct InputState {
     pub direction: DirectionKind,
     pub amount: String,
     pub description: String,
+    pub to_account_idx: usize,
+    pub new_account_name: String,
+    pub new_account_kind_idx: usize,
 }
 
 impl Default for ActiveField {
@@ -25,6 +28,9 @@ impl Default for InputState {
             direction: DirectionKind::Expense,
             amount: String::new(),
             description: String::new(),
+            to_account_idx: 0,
+            new_account_name: String::new(),
+            new_account_kind_idx: 0,
         }
     }
 }
@@ -33,12 +39,17 @@ impl Default for InputState {
 pub enum ActiveField {
     Amount,
     Description,
+    AccountName,
+    AccountKind,
 }
 
 #[derive(PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Input,
+    Transfer,
+    AddAccount,
+    DeleteAccount,
 }
 
 pub struct App {
@@ -58,7 +69,7 @@ impl App {
             accounts: Vec::new(),
             categories: Vec::new(),
             transactions: Vec::new(),
-            status: "Press a to add, q to quit (live updates enabled)".to_string(),
+            status: "Press a add txn, t transfer, n new acct, x delete, q quit".to_string(),
             mode: Mode::Normal,
             input: InputState {
                 direction: DirectionKind::Expense,
