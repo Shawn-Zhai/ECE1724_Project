@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 use tokio_tungstenite::connect_async;
 
-use super::api::{create_account, delete_account, refresh, submit_transaction};
+use super::api::{create_account, delete_account, delete_transaction, refresh, submit_transaction};
 use super::app::{ActiveField, App, Mode};
 use super::ui::ui;
 
@@ -65,6 +65,7 @@ pub async fn run_app(
                 Mode::Transfer => handle_transfer_mode(key.code, app).await?,
                 Mode::AddAccount => handle_add_account_mode(key.code, app).await?,
                 Mode::DeleteAccount => handle_delete_account_mode(key.code, app).await?,
+                Mode::DeleteTransaction => handle_delete_transaction_mode(key.code, app).await?,
             };
             if app.mode == Mode::Normal && matches!(key.code, KeyCode::Char('q')) {
                 break;
@@ -77,11 +78,23 @@ pub async fn run_app(
 fn handle_normal_mode(code: KeyCode, app: &mut App) -> Result<()> {
     match code {
         KeyCode::Char('q') => {}
+        KeyCode::Up => {
+            if !app.transactions.is_empty() {
+                app.selected_txn_idx =
+                    (app.selected_txn_idx + app.transactions.len() - 1) % app.transactions.len();
+            }
+        }
+        KeyCode::Down => {
+            if !app.transactions.is_empty() {
+                app.selected_txn_idx = (app.selected_txn_idx + 1) % app.transactions.len();
+            }
+        }
         KeyCode::Char('a') => {
             app.mode = Mode::Input;
             app.input = Default::default();
             app.status =
                 "Add transaction: amount/description, Tab switches fields, Enter to submit".into();
+            app.editing_txn_id = None;
         }
         KeyCode::Char('t') => {
             app.mode = Mode::Transfer;
@@ -89,6 +102,7 @@ fn handle_normal_mode(code: KeyCode, app: &mut App) -> Result<()> {
             app.input.direction = super::model::DirectionKind::Transfer;
             app.status = "Transfer: left/right source, up/down destination, amount then Enter"
                 .into();
+            app.editing_txn_id = None;
         }
         KeyCode::Char('n') => {
             app.mode = Mode::AddAccount;
@@ -99,6 +113,49 @@ fn handle_normal_mode(code: KeyCode, app: &mut App) -> Result<()> {
         KeyCode::Char('x') => {
             app.mode = Mode::DeleteAccount;
             app.status = "Delete account: left/right to pick (defaults locked), Enter to delete, Esc to cancel".into();
+        }
+        KeyCode::Char('e') => {
+            if let Some(txn) = app.transactions.get(app.selected_txn_idx).cloned() {
+                app.editing_txn_id = Some(txn.id.clone());
+                app.input = Default::default();
+                // Prefill fields based on existing transaction.
+                if let Some(idx) = app.accounts.iter().position(|a| a.id == txn.account_id) {
+                    app.input.account_idx = idx;
+                }
+                if let Some(split) = txn.splits.first() {
+                    if let Some(idx) = app.categories.iter().position(|c| c.id == split.category_id)
+                    {
+                        app.input.category_idx = idx;
+                    }
+                }
+                app.input.direction = txn.direction.clone();
+                app.input.amount = format!("{}", txn.amount);
+                app.input.description = txn.description.unwrap_or_default();
+                if let Some(to_id) = txn.to_account_id {
+                    if let Some(idx) = app.accounts.iter().position(|a| a.id == to_id) {
+                        app.input.to_account_idx = idx;
+                    }
+                    app.input.direction = super::model::DirectionKind::Transfer;
+                    app.mode = Mode::Transfer;
+                    app.status =
+                        "Editing transfer: adjust fields, Enter to save, Esc to cancel".into();
+                } else {
+                    app.mode = Mode::Input;
+                    app.status =
+                        "Editing transaction: adjust fields, Enter to save, Esc to cancel".into();
+                }
+            } else {
+                app.status = "No transaction selected to edit".into();
+            }
+        }
+        KeyCode::Char('d') => {
+            if app.transactions.is_empty() {
+                app.status = "No transaction to delete".into();
+            } else {
+                app.mode = Mode::DeleteTransaction;
+                app.status =
+                    "Delete transaction: Up/Down to choose, Enter confirms, Esc cancels".into();
+            }
         }
         _ => {}
     }
@@ -140,6 +197,7 @@ pub async fn handle_transaction_mode(code: KeyCode, app: &mut App) -> Result<()>
     match code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
+            app.editing_txn_id = None;
             app.status = "Cancelled".into();
         }
         KeyCode::Tab => {
@@ -210,6 +268,7 @@ pub async fn handle_transfer_mode(code: KeyCode, app: &mut App) -> Result<()> {
     match code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
+            app.editing_txn_id = None;
             app.status = "Cancelled".into();
         }
         KeyCode::Tab => {
@@ -340,6 +399,40 @@ pub async fn handle_delete_account_mode(code: KeyCode, app: &mut App) -> Result<
                 app.mode = Mode::Normal;
             } else {
                 app.status = "No account selected".into();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub async fn handle_delete_transaction_mode(code: KeyCode, app: &mut App) -> Result<()> {
+    match code {
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.status = "Cancelled".into();
+        }
+        KeyCode::Up => {
+            if !app.transactions.is_empty() {
+                app.selected_txn_idx =
+                    (app.selected_txn_idx + app.transactions.len() - 1) % app.transactions.len();
+            }
+        }
+        KeyCode::Down => {
+            if !app.transactions.is_empty() {
+                app.selected_txn_idx = (app.selected_txn_idx + 1) % app.transactions.len();
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(txn) = app.transactions.get(app.selected_txn_idx) {
+                let id = txn.id.clone();
+                delete_transaction(app, &id).await?;
+                app.mode = Mode::Normal;
+                if app.selected_txn_idx >= app.transactions.len() && !app.transactions.is_empty() {
+                    app.selected_txn_idx = app.transactions.len() - 1;
+                }
+            } else {
+                app.status = "No transaction selected".into();
             }
         }
         _ => {}
