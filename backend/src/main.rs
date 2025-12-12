@@ -1,5 +1,9 @@
-use axum::extract::{Path, State};
+use axum::extract::{
+    Path, State,
+    ws::{Message, WebSocket, WebSocketUpgrade},
+};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -11,6 +15,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{Level, info};
 use uuid::Uuid;
 
@@ -19,6 +24,12 @@ type AppResult<T> = Result<Json<T>, (StatusCode, String)>;
 #[derive(Clone)]
 struct AppState {
     pool: SqlitePool,
+    notifier: broadcast::Sender<ServerEvent>,
+}
+
+#[derive(Clone, Debug)]
+enum ServerEvent {
+    DataChanged,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -146,10 +157,11 @@ async fn main() -> anyhow::Result<()> {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://finance.db".to_string());
     let pool = build_pool(&database_url).await?;
+    let (notifier, _) = broadcast::channel(32);
     init_db(&pool).await?;
     seed_defaults(&pool).await?;
 
-    let state = AppState { pool };
+    let state = AppState { pool, notifier };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -160,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
             get(list_transactions).post(create_transaction),
         )
         .route("/transactions/{id}", get(get_transaction))
+        .route("/events", get(events_ws))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8080".parse()?;
@@ -183,6 +196,22 @@ async fn shutdown_signal() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn events_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ws_handler(socket, state.notifier.subscribe()))
+}
+
+async fn ws_handler(mut socket: WebSocket, mut rx: broadcast::Receiver<ServerEvent>) {
+    while let Ok(event) = rx.recv().await {
+        match event {
+            ServerEvent::DataChanged => {
+                if socket.send(Message::Text("refresh".into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 async fn list_accounts(State(state): State<AppState>) -> AppResult<Vec<Account>> {
@@ -243,6 +272,7 @@ async fn create_account(
         balance: 0.0,
         created_at: now,
     };
+    let _ = state.notifier.send(ServerEvent::DataChanged);
     Ok(Json(account))
 }
 
@@ -275,6 +305,7 @@ async fn create_category(
         name: payload.name,
         created_at: now,
     };
+    let _ = state.notifier.send(ServerEvent::DataChanged);
     Ok(Json(category))
 }
 
@@ -416,6 +447,7 @@ async fn create_transaction(
         created_at: now.clone(),
         updated_at: now,
     };
+    let _ = state.notifier.send(ServerEvent::DataChanged);
     Ok(Json(created))
 }
 

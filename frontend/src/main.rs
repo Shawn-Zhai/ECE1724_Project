@@ -1,7 +1,7 @@
 mod utils;
 
 use anyhow::Result;
-use utils::{App, setup_terminal, restore_terminal, run_app, refresh};
+use utils::{App, refresh, restore_terminal, run_app, setup_terminal};
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -4,6 +4,6 @@ pub mod model;
 pub mod terminal;
 pub mod ui;
 
-pub use app::App;
 pub use api::refresh;
-pub use terminal::{run_app, setup_terminal, restore_terminal};
+pub use app::App;
+pub use terminal::{restore_terminal, run_app, setup_terminal};

@@ -1,14 +1,17 @@
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 
 use anyhow::Result;
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::ExecutableCommand;
-use ratatui::backend::CrosstermBackend;
+use futures_util::{SinkExt, StreamExt};
 use ratatui::Terminal;
-use tokio::time::Duration;
+use ratatui::backend::CrosstermBackend;
+use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
+use tokio_tungstenite::connect_async;
 
 use super::api::{refresh, submit_transaction};
 use super::app::{ActiveField, App, Mode};
@@ -32,7 +35,20 @@ pub async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
 ) -> Result<()> {
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+    let events_url = format!(
+        "{}/events",
+        app.backend_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://")
+    );
+    tokio::spawn(start_event_listener(events_url, ws_tx));
+
     loop {
+        while ws_rx.try_recv().is_ok() {
+            refresh(app).await?;
+        }
+
         terminal.draw(|f| ui(f, app))?;
 
         if !event::poll(Duration::from_millis(250))? {
@@ -46,7 +62,6 @@ pub async fn run_app(
             if app.mode == Mode::Normal {
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => refresh(app).await?,
                     KeyCode::Char('a') => {
                         app.mode = Mode::Input;
                         app.status =
@@ -61,6 +76,37 @@ pub async fn run_app(
         }
     }
     Ok(())
+}
+
+async fn start_event_listener(url: String, tx: mpsc::UnboundedSender<()>) {
+    loop {
+        match connect_async(&url).await {
+            Ok((stream, _)) => {
+                let (mut write, mut read) = stream.split();
+                // Send a ping to keep the connection alive on some servers.
+                let _ = write
+                    .send(tokio_tungstenite::tungstenite::Message::Ping(vec![]))
+                    .await;
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(_)) => {
+                            let _ = tx.send(());
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
+                            let _ = write
+                                .send(tokio_tungstenite::tungstenite::Message::Pong(data))
+                                .await;
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
 }
 
 pub async fn handle_input_mode(code: KeyCode, app: &mut App) -> Result<()> {
@@ -83,8 +129,7 @@ pub async fn handle_input_mode(code: KeyCode, app: &mut App) -> Result<()> {
         }
         KeyCode::Right => {
             if !app.accounts.is_empty() {
-                app.input.account_idx =
-                    (app.input.account_idx + 1) % app.accounts.len();
+                app.input.account_idx = (app.input.account_idx + 1) % app.accounts.len();
             }
         }
         KeyCode::Up => {
@@ -95,8 +140,7 @@ pub async fn handle_input_mode(code: KeyCode, app: &mut App) -> Result<()> {
         }
         KeyCode::Down => {
             if !app.categories.is_empty() {
-                app.input.category_idx =
-                    (app.input.category_idx + 1) % app.categories.len();
+                app.input.category_idx = (app.input.category_idx + 1) % app.categories.len();
             }
         }
         KeyCode::Char('d') => {

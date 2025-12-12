@@ -3,19 +3,24 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use super::app::{App, ActiveField, Mode};
+use super::app::{ActiveField, App, Mode};
 use super::model::{Account, Category, DirectionKind, Transaction};
 
 pub fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
-            [Constraint::Length(3), Constraint::Min(10), Constraint::Length(7)].as_ref(),
+            [
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(7),
+            ]
+            .as_ref(),
         )
         .split(f.area());
 
-    let status =
-        Paragraph::new(app.status.clone()).block(Block::default().borders(Borders::ALL).title("Status"));
+    let status = Paragraph::new(app.status.clone())
+        .block(Block::default().borders(Borders::ALL).title("Status"));
     f.render_widget(status, chunks[0]);
 
     let main_chunks = Layout::default()
@@ -35,11 +40,7 @@ pub fn ui(f: &mut ratatui::Frame, app: &mut App) {
     render_input(f, chunks[2], app);
 }
 
-fn render_accounts(
-    f: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    accounts: &[Account],
-) {
+fn render_accounts(f: &mut ratatui::Frame, area: ratatui::layout::Rect, accounts: &[Account]) {
     let rows: Vec<Row> = accounts
         .iter()
         .map(|a| {
@@ -59,10 +60,7 @@ fn render_accounts(
         ],
     )
     .block(Block::default().title("Accounts").borders(Borders::ALL))
-    .header(
-        Row::new(vec!["Name", "Type", "Balance"])
-            .style(Style::default().fg(Color::Yellow)),
-    )
+    .header(Row::new(vec!["Name", "Type", "Balance"]).style(Style::default().fg(Color::Yellow)))
     .column_spacing(1);
     f.render_widget(table, area);
 }
@@ -121,23 +119,26 @@ fn render_transactions(
     )
     .block(Block::default().title("Transactions").borders(Borders::ALL))
     .header(
-        Row::new(vec!["Account", "Amount", "Dir", "Category", "Description", "Date"])
-            .style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Row::new(vec![
+            "Account",
+            "Amount",
+            "Dir",
+            "Category",
+            "Description",
+            "Date",
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     )
     .column_spacing(1);
 
     f.render_widget(table, area);
 }
 
-fn render_input(
-    f: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    app: &App,
-) {
+fn render_input(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
     let mut lines = vec![Line::from(vec![
         Span::raw("Mode: "),
         Span::styled(
@@ -147,7 +148,7 @@ fn render_input(
             },
             Style::default().fg(Color::Cyan),
         ),
-        Span::raw(" | q quit | r refresh | a add"),
+        Span::raw(" | q quit | a add"),
     ])];
 
     if app.mode == Mode::Input {

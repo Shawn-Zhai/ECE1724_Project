@@ -58,7 +58,7 @@ impl App {
             accounts: Vec::new(),
             categories: Vec::new(),
             transactions: Vec::new(),
-            status: "Press r to refresh, a to add, q to quit".to_string(),
+            status: "Press a to add, q to quit (live updates enabled)".to_string(),
             mode: Mode::Normal,
             input: InputState {
                 direction: DirectionKind::Expense,
