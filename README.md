@@ -1,5 +1,178 @@
 # ECE1724 Performant Software Systems with Rust  
-## Course Project – Personal Finance Tracker
+# Video Slide Presentation: 
+# Video Demo: 
+
+---
+
+## Final Project Report – Personal Finance Tracker
+
+**Team Members**  
+- **Tony Cai** — 1012411123  
+- **Charlie Yin** — 1006163679  
+- **Shawn Zhai** — 1006979389    shawn.zhai@mail.utoronto.ca
+
+---
+
+## Motivation
+
+Personal finance management is a fundamental yet often underserved problem in everyday software tools. While numerous finance applications exist, many of them rely on cloud-based services, require persistent internet connectivity, or store sensitive financial data on third-party servers. These design choices reduce transparency and may raise privacy concerns for users who prefer local control over their data.
+
+Our team was motivated to design and implement a **local-first, terminal-based personal finance tracker** that emphasizes simplicity, transparency, and user ownership of data. By avoiding graphical interfaces and external services, we aimed to build a lightweight tool that is portable, efficient, and suitable for a wide range of environments, including servers and minimal systems.
+
+From a technical perspective, this project also served as an opportunity to explore Rust as a language for building **complete, user-facing applications**, rather than only libraries or low-level system components. We wanted to demonstrate how Rust’s strong guarantees around memory safety, concurrency, and correctness can be applied to a realistic application with persistent state and interactive user input.
+
+Finally, the project aligns closely with the goals of **ECE1724: Performant Software Systems**, allowing us to apply safe systems design, modular architecture, performance awareness, and reproducibility in a concrete setting.
+
+---
+
+## Objectives
+
+The objectives of this project are:
+
+1. Build a functional personal finance tracking application that supports recording income and expenses.
+2. Organize financial data using categories to improve clarity and analysis.
+3. Maintain a clear separation between backend logic and frontend interaction.
+4. Leverage Rust’s ownership model and type system to ensure correctness and safety.
+5. Provide an intuitive terminal-based user interface.
+
+---
+
+## Features
+
+### Transaction Management
+
+The application allows users to create and manage financial transactions representing both income and expenses. Each transaction includes:
+
+- Transaction type (income or expense)
+- Monetary amount
+- Category
+- Optional description
+- Date or timestamp
+
+This structured representation forms the foundation of the application.
+
+---
+
+### Categorization of Financial Data
+
+Transactions can be assigned to categories such as food, rent, transportation, or salary. Categorization enables users to:
+
+- Analyze spending patterns
+- Identify major expense sources
+- Maintain organized financial records
+
+---
+
+### Terminal User Interface (TUI)
+
+The project provides a text-based user interface that runs entirely in the terminal. The TUI:
+
+- Presents menus and prompts for interaction
+- Displays transaction data in a readable format
+- Does not rely on any graphical environment
+
+This improves portability and allows the application to run on minimal systems.
+
+---
+
+### Local Persistent Storage
+
+All financial data is stored locally on the user’s machine. This design:
+
+- Preserves privacy
+- Enables offline use
+- Avoids reliance on external services
+
+Data persistence is handled transparently by the backend.
+
+---
+
+### Modular and Extensible Design
+
+The project is organized into backend and frontend components with clear interfaces. This design improves maintainability and makes it easier to add future features such as summaries or reports.
+
+---
+
+## User’s / Developer’s Guide
+
+### User Guide
+
+From the repo root, start the backend (cargo run -p backend), then in another terminal start the TUI frontend (cargo run -p frontend). In the TUI, follow the menu to add income/expense transactions, choose or type categories, optionally add descriptions and dates, review the transaction list, and use edit/delete when available; changes save automatically, and you can quit via the on-screen exit option (then stop the backend with Ctrl+C).
+
+---
+
+### Developer Guide
+
+Backend code lives in backend/ and TUI code in frontend/. Build or run with Cargo (cargo build, cargo run -p backend, cargo run -p frontend); cargo test runs tests if present. Integrate new features by extending backend services (data models, storage, APIs) and updating frontend views/commands to call them. Keep category/type validation in the backend, preserve the existing interfaces between the two crates, and run both processes to verify end-to-end behavior.
+
+---
+
+## Reproducibility Guide
+
+It is assumed that **Rust and Cargo are already installed** on the system.
+
+---
+
+### Step 1: Clone the Repository
+git clone https://github.com/Shawn-Zhai/ECE1724_Project.git
+cd ECE1724_Project
+
+### Step 2: Run the Backend Server
+cargo run -p backend
+
+### Step 3: Run the Frontend
+cargo run -p frontend
+
+---
+
+## Contributions by Each Team Member
+
+---
+
+### Tony Cai
+
+- Designed and implemented **transaction edit and delete workflows**, enabling full lifecycle management of financial records.
+- Added and refined a **backend service layer**, improving modularity and interaction between system components.
+- Worked closely with Shawn to ensure that new backend features integrated cleanly with existing transaction logic.
+- Participated in **feature testing and validation**, identifying edge cases and usability issues.
+- Contributed to iterative refinement of the application’s behavior based on testing feedback.
+- Assisted with debugging and stabilization during later stages of development.
+
+### Charlie Yin
+
+- Developed the **initial draft of the terminal user interface**, defining how users navigate and interact with the application.
+- Implemented early frontend components that shaped menu layout, interaction flow, and data presentation.
+- Iteratively refined the frontend structure during early development, providing a usable base for further expansion.
+- Collaborated with other team members to align frontend behavior with backend capabilities.
+- Participated in **testing and feedback cycles**, helping identify UI limitations and integration issues.
+- Supported final integration and polishing by validating frontend behavior against backend changes.
+
+### Shawn Zhai
+
+- Implemented the **core backend transaction model**, including transaction creation, validation, and integration logic.
+- Added **persistent storage and data synchronization mechanisms**, ensuring consistency across application runs.
+- Designed and implemented **account management features**, including account creation, deletion, and transfer logic.
+- Integrated the backend with the TUI by exposing backend APIs to the frontend layer.
+- Improved system robustness by enforcing **business rules** (e.g., preventing invalid or negative transaction amounts).
+- Performed extensive **debugging, refactoring, and code cleanup**, resolving import issues and improving maintainability.
+- Coordinated feature integration across team contributions and ensured overall system stability.
+
+---
+
+## Lessons Learned and Concluding Remarks
+
+This project provided valuable experience in designing and implementing a complete software system in Rust. Key lessons learned include:
+
+- Rust’s ownership and type system promote safer and more deliberate software design.
+- Separating backend logic from frontend presentation simplifies debugging and extension.
+- Terminal-based applications can be efficient, portable, and user-friendly when designed carefully.
+- Clear documentation and explicit setup instructions are essential for reproducibility.
+
+Overall, the project successfully met its objectives and demonstrated how Rust can be used to build performant, reliable, and user-facing software systems. The experience reinforced the core principles taught in ECE1724 and provided a strong foundation for future systems-level development.
+
+---
+
+## Course Project Proposal – Personal Finance Tracker
 
 **Team Members**  
 - **Tony Cai** — 1012411123  
