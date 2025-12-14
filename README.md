@@ -7,8 +7,8 @@
 ## Final Project Report – Personal Finance Tracker
 
 **Team Members**  
-- **Tony Cai** — 1012411123  
-- **Charlie Yin** — 1006163679  
+- **Tony Cai** — 1012411123      t.cai@mail.utoronto.ca
+- **Charlie Yin** — 1006163679   zhiqiang.yin@mail.utoronto.ca
 - **Shawn Zhai** — 1006979389    shawn.zhai@mail.utoronto.ca
 
 ---
