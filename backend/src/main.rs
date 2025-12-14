@@ -131,7 +131,7 @@ struct CreateCategory {
     name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct SplitInput {
     category_id: String,
     amount: f64,
@@ -175,7 +175,10 @@ async fn main() -> anyhow::Result<()> {
             "/transactions",
             get(list_transactions).post(create_transaction),
         )
-        .route("/transactions/{id}", get(get_transaction))
+        .route(
+            "/transactions/{id}",
+            get(get_transaction).put(update_transaction).delete(delete_transaction),
+        )
         .route("/events", get(events_ws))
         .with_state(state);
 
@@ -437,18 +440,6 @@ async fn create_transaction(
     };
 
     let mut tx = state.pool.begin().await.map_err(internal_error)?;
-    let source: Option<(String, f64)> = sqlx::query_as(
-        "SELECT kind, balance FROM accounts WHERE id = ?1",
-    )
-    .bind(&payload.account_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(internal_error)?;
-    let (source_kind, source_balance) = source
-        .ok_or((StatusCode::NOT_FOUND, "source account not found".into()))?;
-
-    let overdraft_allowed = matches!(source_kind.as_str(), "credit" | "investment");
-    let would_negative = |bal: f64, amount: f64| bal - amount < 0.0;
     sqlx::query("INSERT INTO transactions (id, account_id, to_account_id, amount, direction, description, occurred_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
         .bind(&txn_id)
         .bind(&payload.account_id)
@@ -490,41 +481,62 @@ async fn create_transaction(
 
     match direction {
         TransactionDirection::Income => {
-            sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+            let affected = sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
                 .bind(payload.amount)
                 .bind(&payload.account_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(internal_error)?;
+                .map_err(internal_error)?
+                .rows_affected();
+
+            if affected == 0 {
+                return Err((StatusCode::NOT_FOUND, "source account not found".into()));
+            }
         }
         TransactionDirection::Expense => {
-            if !overdraft_allowed && would_negative(source_balance, payload.amount) {
-                return Err((StatusCode::BAD_REQUEST, "insufficient funds for this account type".into()));
+            let affected = sqlx::query(
+                "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2 AND (kind IN ('credit', 'investment') OR balance >= ?1)",
+            )
+            .bind(payload.amount)
+            .bind(&payload.account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error)?
+            .rows_affected();
+
+            if affected == 0 {
+                return Err((StatusCode::BAD_REQUEST, "insufficient funds or account not found".into()));
             }
-            sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2")
-                .bind(payload.amount)
-                .bind(&payload.account_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(internal_error)?;
         }
         TransactionDirection::Transfer => {
             if let Some(dest) = &to_account_id {
-                if !overdraft_allowed && would_negative(source_balance, payload.amount) {
-                    return Err((StatusCode::BAD_REQUEST, "insufficient funds for this account type".into()));
+                let debited = sqlx::query(
+                    "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2 AND (kind IN ('credit', 'investment') OR balance >= ?1)",
+                )
+                .bind(payload.amount)
+                .bind(&payload.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?
+                .rows_affected();
+
+                if debited == 0 {
+                    return Err((StatusCode::BAD_REQUEST, "insufficient funds or account not found".into()));
                 }
-                sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2")
-                    .bind(payload.amount)
-                    .bind(&payload.account_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(internal_error)?;
-                sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
-                    .bind(payload.amount)
-                    .bind(dest)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(internal_error)?;
+
+                let credited = sqlx::query(
+                    "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2",
+                )
+                .bind(payload.amount)
+                .bind(dest)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?
+                .rows_affected();
+
+                if credited == 0 {
+                    return Err((StatusCode::NOT_FOUND, "destination account not found".into()));
+                }
             }
         }
     }
@@ -545,6 +557,260 @@ async fn create_transaction(
     };
     let _ = state.notifier.send(ServerEvent::DataChanged);
     Ok(Json(created))
+}
+
+async fn delete_transaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut tx = state.pool.begin().await.map_err(internal_error)?;
+    let existing: Option<TransactionRow> =
+        sqlx::query_as("SELECT * FROM transactions WHERE id = ?1")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_error)?;
+    let Some(row) = existing else {
+        return Err((StatusCode::NOT_FOUND, "transaction not found".into()));
+    };
+
+    let direction = parse_direction(&row.direction)?;
+
+    match direction {
+        TransactionDirection::Income => {
+            let affected = sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2 AND (kind IN ('credit', 'investment') OR balance >= ?1)")
+                .bind(row.amount)
+                .bind(&row.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?
+                .rows_affected();
+            if affected == 0 {
+                return Err((StatusCode::BAD_REQUEST, "insufficient funds to remove income or account missing".into()));
+            }
+        }
+        TransactionDirection::Expense => {
+            let affected = sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+                .bind(row.amount)
+                .bind(&row.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?
+                .rows_affected();
+            if affected == 0 {
+                return Err((StatusCode::NOT_FOUND, "source account not found".into()));
+            }
+        }
+        TransactionDirection::Transfer => {
+            if let Some(dest) = &row.to_account_id {
+                let dest_affected = sqlx::query("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2 AND (kind IN ('credit', 'investment') OR balance >= ?1)")
+                    .bind(row.amount)
+                    .bind(dest)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal_error)?
+                    .rows_affected();
+                if dest_affected == 0 {
+                    return Err((StatusCode::BAD_REQUEST, "insufficient funds on destination to rollback transfer or account missing".into()));
+                }
+            }
+            let src_affected = sqlx::query("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2")
+                .bind(row.amount)
+                .bind(&row.account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_error)?
+                .rows_affected();
+            if src_affected == 0 {
+                return Err((StatusCode::NOT_FOUND, "source account not found".into()));
+            }
+        }
+    }
+
+    sqlx::query("DELETE FROM transaction_splits WHERE transaction_id = ?1")
+        .bind(&row.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+    sqlx::query("DELETE FROM transactions WHERE id = ?1")
+        .bind(&row.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+
+    tx.commit().await.map_err(internal_error)?;
+    let _ = state.notifier.send(ServerEvent::DataChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_transaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<CreateTransaction>,
+) -> AppResult<Transaction> {
+    if payload.amount < 0.0 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be non-negative".into()));
+    }
+
+    let direction = payload.direction.clone();
+    let mut tx = state.pool.begin().await.map_err(internal_error)?;
+    let existing: Option<TransactionRow> =
+        sqlx::query_as("SELECT * FROM transactions WHERE id = ?1")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_error)?;
+    let Some(old) = existing else {
+        return Err((StatusCode::NOT_FOUND, "transaction not found".into()));
+    };
+
+    let to_account_id = match direction {
+        TransactionDirection::Transfer => {
+            let dest = payload
+                .to_account_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "transfer requires destination account".into()))?;
+            if dest == payload.account_id {
+                return Err((StatusCode::BAD_REQUEST, "source and destination cannot match".into()));
+            }
+            let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM accounts WHERE id = ?1")
+                .bind(&dest)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(internal_error)?;
+            if exists.is_none() {
+                return Err((StatusCode::NOT_FOUND, "destination account not found".into()));
+            }
+            Some(dest)
+        }
+        _ => None,
+    };
+
+    // Replace splits with new set
+    sqlx::query("DELETE FROM transaction_splits WHERE transaction_id = ?1")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+
+    let occurred_at = payload
+        .occurred_at
+        .clone()
+        .unwrap_or_else(|| OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap());
+    let updated_at = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+
+    sqlx::query("UPDATE transactions SET account_id = ?1, to_account_id = ?2, amount = ?3, direction = ?4, description = ?5, occurred_at = ?6, updated_at = ?7 WHERE id = ?8")
+        .bind(&payload.account_id)
+        .bind(&to_account_id)
+        .bind(payload.amount)
+        .bind(direction.as_str())
+        .bind(&payload.description)
+        .bind(&occurred_at)
+        .bind(&updated_at)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
+
+    let splits = if direction == TransactionDirection::Transfer {
+        Vec::new()
+    } else {
+        payload
+            .splits
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| TransactionSplit {
+                transaction_id: id.clone(),
+                category_id: s.category_id,
+                amount: s.amount,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for split in &splits {
+        sqlx::query("INSERT INTO transaction_splits (transaction_id, category_id, amount) VALUES (?1, ?2, ?3)")
+            .bind(&split.transaction_id)
+            .bind(&split.category_id)
+            .bind(split.amount)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error)?;
+    }
+
+    // Apply balance deltas atomically to avoid transient negative checks.
+    use std::collections::HashMap;
+    let mut deltas: HashMap<String, f64> = HashMap::new();
+
+    let mut add_delta = |account_id: &str, delta: f64| {
+        let entry = deltas.entry(account_id.to_string()).or_insert(0.0);
+        *entry += delta;
+    };
+
+    let old_direction = parse_direction(&old.direction)?;
+    match old_direction {
+        TransactionDirection::Income => add_delta(&old.account_id, -old.amount),
+        TransactionDirection::Expense => add_delta(&old.account_id, old.amount),
+        TransactionDirection::Transfer => {
+            add_delta(&old.account_id, old.amount);
+            if let Some(dest) = &old.to_account_id {
+                add_delta(dest, -old.amount);
+            }
+        }
+    }
+
+    match direction {
+        TransactionDirection::Income => add_delta(&payload.account_id, payload.amount),
+        TransactionDirection::Expense => add_delta(&payload.account_id, -payload.amount),
+        TransactionDirection::Transfer => {
+            add_delta(&payload.account_id, -payload.amount);
+            if let Some(dest) = &to_account_id {
+                add_delta(dest, payload.amount);
+            }
+        }
+    }
+
+    for (acct, delta) in deltas {
+        if delta == 0.0 {
+            continue;
+        }
+        let affected = sqlx::query(
+            "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2 AND (kind IN ('credit', 'investment') OR balance + ?1 >= 0)",
+        )
+        .bind(delta)
+        .bind(&acct)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "insufficient funds for update or account not found".into(),
+            ));
+        }
+    }
+
+    tx.commit().await.map_err(internal_error)?;
+    let updated = Transaction {
+        id,
+        account_id: payload.account_id,
+        to_account_id,
+        amount: payload.amount,
+        direction,
+        description: payload.description,
+        occurred_at,
+        splits,
+        created_at: old.created_at,
+        updated_at,
+    };
+    let _ = state.notifier.send(ServerEvent::DataChanged);
+    Ok(Json(updated))
 }
 
 async fn build_pool(database_url: &str) -> anyhow::Result<SqlitePool> {
@@ -591,7 +857,7 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             kind TEXT NOT NULL,
-            balance REAL NOT NULL DEFAULT 0,
+            balance REAL NOT NULL DEFAULT 0 CHECK (kind IN ('credit', 'investment') OR balance >= 0),
             created_at TEXT NOT NULL
         );
         "#,

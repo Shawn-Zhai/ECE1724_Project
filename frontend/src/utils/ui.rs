@@ -35,6 +35,7 @@ pub fn ui(f: &mut ratatui::Frame, app: &mut App) {
         &app.transactions,
         &app.categories,
         &app.accounts,
+        app.selected_txn_idx,
     );
 
     render_input(f, chunks[2], app);
@@ -71,10 +72,12 @@ fn render_transactions(
     txns: &[Transaction],
     categories: &[Category],
     accounts: &[Account],
+    selected_idx: usize,
 ) {
     let rows: Vec<Row> = txns
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(idx, t)| {
             let account = accounts
                 .iter()
                 .find(|a| a.id == t.account_id)
@@ -110,6 +113,11 @@ fn render_transactions(
                 Cell::from(t.description.clone().unwrap_or_else(|| "".into())),
                 Cell::from(t.occurred_at.clone()),
             ])
+            .style(if idx == selected_idx {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            })
         })
         .collect();
 
@@ -148,19 +156,30 @@ fn render_transactions(
 }
 
 fn render_input(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+    let mode_label = if app.editing_txn_id.is_some() {
+        match app.mode {
+            Mode::Input => "Editing",
+            Mode::Transfer => "Edit Transfer",
+            Mode::AddAccount => "New Account",
+            Mode::DeleteAccount => "Delete Account",
+            Mode::DeleteTransaction => "Delete Txn",
+            Mode::Normal => "Normal",
+        }
+    } else {
+        match app.mode {
+            Mode::Normal => "Normal",
+            Mode::Input => "Adding",
+            Mode::Transfer => "Transfer",
+            Mode::AddAccount => "New Account",
+            Mode::DeleteAccount => "Delete Account",
+            Mode::DeleteTransaction => "Delete Txn",
+        }
+    };
+
     let mut lines = vec![Line::from(vec![
         Span::raw("Mode: "),
-        Span::styled(
-            match app.mode {
-                Mode::Normal => "Normal",
-                Mode::Input => "Adding",
-                Mode::Transfer => "Transfer",
-                Mode::AddAccount => "New Account",
-                Mode::DeleteAccount => "Delete Account",
-            },
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw(" | q quit | a add | t transfer | n new acct | x delete"),
+        Span::styled(mode_label, Style::default().fg(Color::Cyan)),
+        Span::raw(" | q quit | a add | t transfer | n new acct | x delete acct | e edit txn | d delete txn | arrows choose txn"),
     ])];
 
     if app.mode == Mode::Input {
@@ -285,6 +304,16 @@ fn render_input(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) 
         lines.push(Line::raw(format!(
             "Select account to delete (defaults locked): {} (left/right, Enter confirms, Esc cancels)",
             account_name
+        )));
+    } else if app.mode == Mode::DeleteTransaction {
+        let txn_desc = app
+            .transactions
+            .get(app.selected_txn_idx)
+            .map(|t| t.description.clone().unwrap_or_else(|| format!("{:?}", t.direction)))
+            .unwrap_or_else(|| "<no transaction>".into());
+        lines.push(Line::raw(format!(
+            "Select transaction to delete: {} (Up/Down moves, Enter deletes, Esc cancels)",
+            txn_desc
         )));
     }
 

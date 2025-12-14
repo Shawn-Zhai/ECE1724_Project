@@ -22,7 +22,6 @@ pub async fn submit_transaction(app: &mut App) -> Result<()> {
         Some(app.input.description.clone())
     };
 
-    let url = format!("{}/transactions", app.backend_url);
     let client = reqwest::Client::new();
     let res = if app.mode == Mode::Transfer {
         let from = app
@@ -46,7 +45,19 @@ pub async fn submit_transaction(app: &mut App) -> Result<()> {
             occurred_at: None,
             splits: None,
         };
-        client.post(&url).json(&payload).send().await?
+        if let Some(edit_id) = app.editing_txn_id.clone() {
+            client
+                .put(format!("{}/transactions/{}", app.backend_url, edit_id))
+                .json(&payload)
+                .send()
+                .await?
+        } else {
+            client
+                .post(format!("{}/transactions", app.backend_url))
+                .json(&payload)
+                .send()
+                .await?
+        }
     } else {
         let account = app
             .accounts
@@ -69,11 +80,28 @@ pub async fn submit_transaction(app: &mut App) -> Result<()> {
                 amount,
             }]),
         };
-        client.post(&url).json(&payload).send().await?
+        if let Some(edit_id) = app.editing_txn_id.clone() {
+            client
+                .put(format!("{}/transactions/{}", app.backend_url, edit_id))
+                .json(&payload)
+                .send()
+                .await?
+        } else {
+            client
+                .post(format!("{}/transactions", app.backend_url))
+                .json(&payload)
+                .send()
+                .await?
+        }
     };
 
     if res.status().is_success() {
-        app.status = "Transaction saved".into();
+        app.status = if app.editing_txn_id.is_some() {
+            "Transaction updated".into()
+        } else {
+            "Transaction saved".into()
+        };
+        app.editing_txn_id = None;
         app.input = InputState {
             direction: DirectionKind::Expense,
             ..Default::default()
@@ -111,6 +139,11 @@ pub async fn refresh(app: &mut App) -> Result<()> {
     app.accounts = accounts;
     app.categories = categories;
     app.transactions = transactions;
+    if !app.transactions.is_empty() {
+        app.selected_txn_idx = app.selected_txn_idx.min(app.transactions.len().saturating_sub(1));
+    } else {
+        app.selected_txn_idx = 0;
+    }
     app.status = format!(
         "{} accounts | {} categories | {} transactions",
         app.accounts.len(),
@@ -142,6 +175,22 @@ pub async fn create_account(app: &mut App, name: &str, kind: &str) -> Result<()>
     } else {
         let text = res.text().await.unwrap_or_else(|_| "unknown error".into());
         app.status = format!("Failed to create account: {text}");
+    }
+    Ok(())
+}
+
+pub async fn delete_transaction(app: &mut App, txn_id: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let res = client
+        .delete(format!("{}/transactions/{}", app.backend_url, txn_id))
+        .send()
+        .await?;
+    if res.status().is_success() {
+        refresh(app).await?;
+        app.status = "Transaction deleted".into();
+    } else {
+        let text = res.text().await.unwrap_or_else(|_| "unknown error".into());
+        app.status = format!("Failed to delete transaction: {text}");
     }
     Ok(())
 }

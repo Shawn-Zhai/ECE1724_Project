@@ -50,6 +50,7 @@ pub enum Mode {
     Transfer,
     AddAccount,
     DeleteAccount,
+    DeleteTransaction,
 }
 
 pub struct App {
@@ -57,6 +58,8 @@ pub struct App {
     pub accounts: Vec<Account>,
     pub categories: Vec<Category>,
     pub transactions: Vec<Transaction>,
+    pub selected_txn_idx: usize,
+    pub editing_txn_id: Option<String>,
     pub status: String,
     pub mode: Mode,
     pub input: InputState,
@@ -69,7 +72,9 @@ impl App {
             accounts: Vec::new(),
             categories: Vec::new(),
             transactions: Vec::new(),
-            status: "Press a add txn, t transfer, n new acct, x delete, q quit".to_string(),
+            selected_txn_idx: 0,
+            editing_txn_id: None,
+            status: "Press a add txn, t transfer, n new acct, x delete acct, e edit txn, d delete txn, q quit".to_string(),
             mode: Mode::Normal,
             input: InputState {
                 direction: DirectionKind::Expense,
