@@ -1,6 +1,9 @@
 # ECE1724 Performant Software Systems with Rust  
 # Video Slide Presentation: 
 # Video Demo: 
+A short demo showcasing the system and its core workflows is available here:
+
+▶️ [Watch the demo video](https://drive.google.com/file/d/1L6DFaM4mtiISFeKDEs6_DEqHNVvXf-6D/view?usp=drive_link)
 
 ---
 
